@@ -1,8 +1,8 @@
 # DNA-seq-To-Discover-Somatic-Variants-In-Tumor
 
 2 sets of paired-end seq FASTQ (gzip compressed) files were used: 
-       1) Tumour: tumour_R1.fq.gz and tumour_R2.fq.gz. 
-       2) Matched normal control: germline_R1.fq.gz and germline_R2.fq.gz
+ 1) Tumour: tumour_R1.fq.gz and tumour_R2.fq.gz. 
+ 2) Matched normal control: germline_R1.fq.gz and germline_R2.fq.gz
        
  Pipeline:
  
