@@ -14,7 +14,7 @@
  5) Using Annovar to filter the list of variants against 1000G and exome sequencing project, removing all variants that occur in more than 1% of the cases in these datasets. Then using Annovar to annotate the remaining variants with gene names, dbSNP id and cosmic id.
 6) Filtering out variants with a variant allele frequency of <10%.
       * Reporting all the command lines and analytic steps for the analysis above.
-7) Obtaining variants for gene TP53 And listing the coordinate of the variants in chromosome 17; the mutation, e.g., reference allele, mutated allele; the annotation of this variant(s), such as cDNA position, affected amino acid, the change of the amino acid.
+7) Obtaining variants for gene TP53 and listing the coordinate of the variants in chromosome 17; the mutation, e.g., reference allele, mutated allele; the annotation of this variant(s), such as cDNA position, affected amino acid, the change of the amino acid.
 8) Using VarScan in the somatic mode to run the tumour and germline samples together (using germline as control), generating the resulting VCF file of all somatic mutations, and annotating mutations using ANNOVAR. 
      *  Reporting all the command lines and analytic steps for the analysis above.
 9) Listing mutations in the mutation(s) in gene TP53, with all associated annotation and the variant allele frequency of the mutation(s) in TP53
