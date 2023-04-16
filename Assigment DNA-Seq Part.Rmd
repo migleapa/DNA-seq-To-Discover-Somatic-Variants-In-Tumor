@@ -1,0 +1,593 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+
+**Omics assignment**
+
+1. DNA-seq analysis 
+
+```{shell}
+# logging in to HPC
+
+ssh ha221510@login.hpc.qmul.ac.uk
+
+qlogin -pe smp 4 -l h_vmem=8G -l h_rt=4:0:0
+```
+
+
+
+```{shell}
+# creating new dir to store my files for DNA-seq part of assignment
+
+mkdir DNAseq_assigment
+
+# sub dir
+
+mkdir reference
+mkdir FASTQ_raw
+mkdir Alignment
+```
+
+
+
+```{shell}
+# copying FASTQ files and BOWTIE2 chromosome 17 reference index files to my working dir
+
+cp -r /data/teaching/bci_teaching/assignment/DNAseq/* .
+cp -r /data/teaching/bci_teaching/DNAseq/Reference/Bowtie2Idx/* .
+```
+
+
+**1) Aligning the FASTQ files to chromosome 17 using BOWTIE2; generating one alignment file for tumour and one alignment file for germline normal control**
+
+```{shell}
+# running QC on raw FASTQ files
+
+module load fastqc
+
+mkdir QC
+
+fastqc -o QC/ FASTQ_Raw/*
+
+# downloading results to my local machine 
+
+scp ha221510@login.hpc.qmul.ac.uk:~/ha221510/DNAseq_assigment/QC/multiqc_report.html ./
+
+# seq data looks good. Mean Q scores are > Q30 throughout majority of reads' length.No adapter contamination either. Skipping trimming step
+
+```
+
+
+
+```{shell}
+# loading packages 
+
+module load bowtie2
+module load samtools
+
+```
+
+
+
+```{shell}
+# aligning to bowtie2 reference and sorting - tumour data
+
+time bowtie2 -p 4 \
+        --rg ID:FL75820 \
+        --rg SM:FL75820 \
+        --rg PL:ILLUMINA \
+        --rg LB:FL75820 \
+        -x reference/GRCh38.108.chr17 \
+        -1 FASTQ_raw/tumour_R1.fq.gz \
+        -2 FASTQ_raw/tumour_R2.fq.gz | # generates SAM, piping to samtools for sorting and conversion to BAM
+        samtools sort -o Alignment/tumour.bam -
+        
+        
+# aligning to bowtie2 reference and sorting - germline data
+
+time bowtie2 -p 4 \
+        --rg ID:FL75820 \
+        --rg SM:FL75820 \
+        --rg PL:ILLUMINA \
+        --rg LB:FL75820 \
+        -x reference/GRCh38.108.chr17 \
+        -1 FASTQ_raw/germline_R1.fq.gz \
+        -2 FASTQ_raw/germline_R2.fq.gz |
+        samtools sort -o Alignment/germline.bam -
+
+     
+# checking if alignment worked for tumour and germline files
+
+samtools flagstat Alignment/tumour.bam   
+
+samtools flagstat Alignment/germline.bam
+```
+
+
+**Tumour.bam samtools flagstat**
+
+[ha221510@ddy81 DNAseq_assigment]$ samtools flagstat Alignment/tumour.bam\
+30466404 + 0 in total (QC-passed reads + QC-failed reads)\
+0 + 0 secondary\
+0 + 0 supplementary\
+0 + 0 duplicates\
+30170393 + 0 mapped (99.03% : N/A)\
+30466404 + 0 paired in sequencing\
+15233202 + 0 read1\
+15233202 + 0 read2\
+27623390 + 0 properly paired (90.67% : N/A)\
+30059564 + 0 with itself and mate mapped\
+110829 + 0 singletons (0.36% : N/A)\
+0 + 0 with mate mapped to a different chr\
+0 + 0 with mate mapped to a different chr (mapQ>=5)\
+
+
+**Germline.bam samtools flagstat**
+
+[ha221510@ddy81 DNAseq_assigment]$ samtools flagstat Alignment/germline.bam\
+25809738 + 0 in total (QC-passed reads + QC-failed reads)\
+0 + 0 secondary\
+0 + 0 supplementary\
+0 + 0 duplicates\
+25542805 + 0 mapped (98.97% : N/A)\
+25809738 + 0 paired in sequencing\
+12904869 + 0 read1\
+12904869 + 0 read2\
+23016744 + 0 properly paired (89.18% : N/A)\
+25438438 + 0 with itself and mate mapped\
+104367 + 0 singletons (0.40% : N/A)\
+0 + 0 with mate mapped to a different chr\
+0 + 0 with mate mapped to a different chr (mapQ>=5)\
+\
+\
+\
+**2) Marking duplicate reads in the alignment files** 
+
+```{shell}
+## load java and gatk
+
+module load java
+module load gatk
+```
+
+
+
+```{shell}
+# marking duplicates using MarkDuplicates in tumour.bam
+
+gatk --java-options "-Xmx8G" MarkDuplicates \
+        -I Alignment/tumour.bam \
+        -M QC/tumour.marked \
+        -O Alignment/tumour.marked.bam
+        
+        
+# marking duplicates using MarkDuplicates in germline.bam  
+
+gatk --java-options "-Xmx8G" MarkDuplicates \
+        -I Alignment/germline.bam \
+        -M QC/germline.marked \
+        -O Alignment/germline.marked.bam
+        
+```
+
+
+**3) Run Base Score Quality Recalibration following the GATK workflow**
+
+```{shell}
+# getting reference data: 
+
+cp /data/teaching/bci_teaching/DNAseq/Reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.fa  ./
+cp /data/teaching/bci_teaching/DNAseq/Reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.fa.fai  ./
+cp /data/teaching/bci_teaching/DNAseq/Reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.dict  ./
+
+cp /data/teaching/bci_teaching/DNAseq/Reference/gatkResources/* ./
+
+```
+
+
+
+```{shell}
+# generating the model using the BaseRecalibrator for tumour data
+
+gatk --java-options "-Xmx4G" BaseRecalibrator \
+        -I Alignment/tumour.marked.bam \
+        -R reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.fa \
+        --known-sites reference/resources_broad_hg38_v0_1000G_omni2.5.hg38.noCHR.vcf \
+        -O Alignment/tumour.table
+        
+        
+# applying the model using ApplyBQSR for tumour data
+
+gatk --java-options "-Xmx4G" ApplyBQSR \
+        -R reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.fa \
+        -I Alignment/tumour.marked.bam \
+        --bqsr-recal-file Alignment/tumour.table \
+        -O Alignment/tumour.recalib.bam
+        
+        
+        
+# generating the model using the BaseRecalibrator for germline data
+
+gatk --java-options "-Xmx4G" BaseRecalibrator \
+        -I Alignment/germline.marked.bam \
+        -R reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.fa \
+        --known-sites reference/resources_broad_hg38_v0_1000G_omni2.5.hg38.noCHR.vcf \
+        -O Alignment/germline.table
+        
+        
+# applying the model using ApplyBQSRfor germline data
+
+gatk --java-options "-Xmx4G" ApplyBQSR \
+        -R reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.fa \
+        -I Alignment/germline.marked.bam \
+        --bqsr-recal-file Alignment/germline.table \
+        -O Alignment/germline.recalib.bam
+        
+```
+
+
+**4) Runing Varscan on tumour sample only against the reference genome (chromosome 17) to identify all the variants, generating the VCF variant file.**
+
+```{shell}
+# copping jar file to run Varscan2 
+
+cp -vR /data/teaching/bci_teaching/DNAseq/VarScan.v2.4.3.jar ./
+
+```
+
+
+
+```{shell}
+# making an output directory
+
+mkdir VCF
+```
+
+
+
+```{shell}
+# running Variant Calling with varscan2
+
+samtools mpileup \
+        -q 20 \
+        -f reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.fa \
+        Alignment/tumour.recalib.bam |
+java -jar VarScan.v2.4.3.jar mpileup2snp \
+        --min-coverage 20 \
+        --min-avg-qual 20 \
+        --min-read2 4 \
+        --p-value 0.2 \
+        --min-var-freq 0.01 \
+        --strand-filter 1 \
+        --output-vcf 1 > VCF/tumour.vcf
+
+        
+#less VCF/tumour.vcf 
+```
+
+
+**5) Using Annovar to filter the list of variants against 1000G and exome sequencing project, removing all variants that occur in more than 1% of the cases in these datasets. Then use Annovar to annotate the remaining variants with gene names, dbSNP id and cosmic id**
+
+```{shell}
+# loading annovar
+
+module load annovar
+```
+
+
+
+```{shell}
+# converting my original VCF to specific format that Annovar takes
+
+convert2annovar.pl --format vcf4 \
+        VCF/tumour.vcf \
+        --includeinfo \
+        --filter PASS \
+        --outfile VCF/tumour.pass.vcf
+        
+```
+
+
+
+```{shell}
+# Using 1000G and exome sequencing project population databases to remove variants that in more than 1% of the cases in these datasets (maf 0.01)
+
+#copying ref
+cp -vR /data/teaching/bci_teaching/DNAseq/Reference/humandb/ ./
+
+# 1000 genomes 
+annotate_variation.pl -filter \
+        -dbtype 1000g2015aug_all \
+        -buildver hg38 \
+        -out VCF/tumour \
+        VCF/tumour.pass.vcf \
+        reference/humandb/ \
+        -maf 0.01
+ 
+# exome sequencing project 
+annotate_variation.pl -filter \
+        -dbtype esp6500siv2_all \
+        -buildver hg38 \
+        -out VCF/tumour \
+        VCF/tumour.hg38_ALL.sites.2015_08_filtered \
+        reference/humandb/ \
+        -score_threshold 0.01  
+        
+```
+
+
+
+```{shell}
+# annotating the remaining variants with gene names (Refgene), dbSNP and cosmicID.
+
+table_annovar.pl \
+        -buildver hg38 \
+        -out VCF/tumour \
+        VCF/tumour.hg38_esp6500siv2_all_filtered \
+        reference/humandb/ \
+        -remove \
+        -otherinfo \
+        -protocol refgene,avsnp150,cosmic92_coding \
+        -operation g,f,f -nastring .
+        
+# saving results file to my local machine     
+
+scp ha221510@login.hpc.qmul.ac.uk:~/DNAseq_assigment/VCF/tumour.hg38_multianno.txt ./
+```
+
+
+**6) Filtering out variants with a variant allele frequency of < 10%**
+
+```{r}
+# loading library
+
+library("tidyverse")
+
+# loading the results
+
+variants <- read.delim("C:\\Users\\mapanavici\\RStudio\\R\\tumour.hg38_multianno.txt",  header = FALSE) 
+
+# last few columns do not have headers - adding them 
+
+headings <- c("chr", "position","id", "ref", "alt", "qual", "filter", "info", "format" ,"sample")
+
+Annotated_variants <- setNames(variants[-1,], c(variants[1,1:12] %>% unlist(), headings))
+
+Annotated_variants
+
+```
+
+
+
+```{r}
+# all counts stored as a string in one cell, splitting "format" value into headers and "sample" values into separate values
+
+headings <- str_split(Annotated_variants$format[1], ":") %>% unlist()
+
+AlleleCounts <- str_split(Annotated_variants$sample, ":") %>% do.call("rbind", .) %>% as.data.frame() %>% setNames(headings) 
+
+AlleleCounts <- mutate(AlleleCounts, FREQ = gsub("%", "", FREQ) %>% as.numeric())
+
+AlleleCounts
+```
+
+
+
+```{r}
+# joining two dataframes together 
+
+Annotated_variants <- cbind(Annotated_variants, AlleleCounts)
+Annotated_variants
+```
+
+
+
+```{r}
+# getting the variants with a variant allele frequency of > 10%
+
+Annotated_variants <- subset(Annotated_variants, FREQ > 10)
+Annotated_variants
+```
+
+
+**7) Can you find any variants for gene TP53? If so, can you list the variant(s), e.g., the coordinate of the variants in chromosome 17; what is the mutation, e.g., reference allele, mutated allele; what is the annotation of this variant(s), such as cDNA position, affected amino acid, the change of the amino acid?**
+
+
+```{r}
+# finding variant(s) associated with gene TP53 
+
+variants_TP53 <- subset(Annotated_variants, Gene.refgene == "TP53")
+
+variants_TP53
+
+# Only 1 variant found
+
+var_info <- list(variants_TP53[c(1,2,3,4,5,9)])
+
+print(var_info)
+
+```
+
+
+
+```{r}
+# anotation of the variant: such as cDNA position, affected amino acid, the change of the amino acid
+
+annot <- str_split(variants_TP53$AAChange.refgene, ":")  %>%  map(tail, -1)
+
+df.annot <- as.data.frame(split(unlist(annot), ceiling(seq_along(unlist(annot))/4)))
+
+df.annot <- as.data.frame(t(df.annot)) #transpose df
+
+colnames(df.annot) <- c("known RefSeq" , "region", "cDNA change", "protein change")
+
+df.annot
+```
+
+
+**8) Using Varscan in the somatic mode to run the tumour and germline samples together (using germline as control), generating the resulting VCF file of all somatic mutations, and annotating mutations using ANNOVAR. Listing the mutation(s) in gene TP53, with all associated annotation. What is the variant allele frequency of the mutation(s) in TP53?**
+
+
+```{shell}
+# loading modules
+
+module load samtools
+module load java
+module load annovar
+
+# generating normal-tumor.mpileup
+
+samtools mpileup -q 20 -B -f reference/Homo_sapiens.GRCh38.108.dna.chromosome.17.fa Alignment/germline.recalib.bam Alignment/tumour.recalib.bam > normal-tumor.mpileup
+
+# running varscan in somatic mode   
+
+java -jar VarScan.v2.4.3.jar somatic normal-tumor.mpileup somatic --mpileup 1 --output-vcf 1 --p-value 0.2 --min-var-freq 0.01 --somatic-p-value 0.05 --strand-filter 1
+
+
+```
+
+
+**output:**
+
+76577296 positions in mpileup file\
+74399358 had sufficient coverage for comparison\
+74212044 were called Reference\
+0 were mixed SNP-indel calls and filtered\
+0 were removed by the strand filter\
+140620 were called Germline\
+2756 were called LOH\
+43934 were called Somatic\
+4 were called Unknown\
+0 were called Variant\
+
+
+```{shell}
+# annotating mutations using annovar
+
+# reformatting my vcf file 
+
+convert2annovar.pl --format vcf4 \
+        VCF/somatic.snp.vcf \
+        --includeinfo \
+        --filter PASS \
+        --outfile VCF/somatic.snp.pass.vcf
+        
+```
+
+
+
+```{shell}
+# Using 1000G and exome sequencing project population databases to filter out positions that occur in >1% of cases (maf)
+
+
+# 1000 genomes 
+annotate_variation.pl -filter \
+        -dbtype 1000g2015aug_all \
+        -buildver hg38 \
+        -out VCF/somatic.snp \
+        VCF/somatic.snp.pass.vcf \
+        reference/humandb/ \
+        -maf 0.01
+ 
+# exome sequencing project 
+annotate_variation.pl -filter \
+        -dbtype esp6500siv2_all \
+        -buildver hg38 \
+        -out VCF/somatic.snp \
+        VCF/somatic.snp.hg38_ALL.sites.2015_08_filtered \
+        reference/humandb/ \
+        -score_threshold 0.01  
+        
+        
+```
+
+
+
+```{shell}
+# annotating the remaining variants with gene names (Refgene), dbSNP and cosmicID.
+
+table_annovar.pl \
+        -buildver hg38 \
+        -out VCF/somatic.snp \
+        VCF/somatic.snp.hg38_esp6500siv2_all_filtered \
+        reference/humandb/ \
+        -remove \
+        -otherinfo \
+        -protocol refgene,avsnp150,cosmic92_coding \
+        -operation g,f,f -nastring .
+        
+# moving somatic file to my local machine   
+
+scp ha221510@login.hpc.qmul.ac.uk:~/DNAseq_assigment/VCF/somatic.snp.hg38_multianno.txt ./
+```
+
+
+
+```{r}
+# loading the results
+
+somatic <- read.delim("C:\\Users\\mapanavici\\RStudio\\R\\somatic.snp.hg38_multianno.txt",  header = FALSE) 
+
+# last few columns do not have headers - adding them 
+
+headings <- c("chr", "position","id", "ref", "alt", "qual", "filter", "info", "format" ,"sample")
+
+Annotated_somatic <- setNames(somatic[-1,], c(somatic[1,1:12] %>% unlist(), headings))
+
+Annotated_somatic
+
+```
+
+
+
+```{r}
+# all counts stored as a string in one cell, splitting "format" value into headers and "sample" values into separate values
+
+headings <- str_split(Annotated_somatic$format[1], ":") %>% unlist()
+
+AlleleCountsSomatic <- str_split(Annotated_somatic$sample, ":") %>% do.call("rbind", .) %>% as.data.frame() %>% setNames(headings) 
+
+AlleleCountsSomatic  <- mutate(AlleleCountsSomatic , FREQ = gsub("%", "", FREQ) %>% as.numeric())
+
+AlleleCountsSomatic 
+```
+
+
+
+```{r}
+# joining two dataframes together
+
+Annotated_somatic.variants <- cbind(Annotated_somatic, AlleleCountsSomatic )
+Annotated_somatic.variants
+
+# filtering out variants with a variant allele frequency of < 10%
+
+Annotated_somatic.variants <- subset(Annotated_somatic.variants, FREQ > 10)
+Annotated_somatic.variants
+```
+
+
+
+```{r}
+# listing the mutation in gene TP53 with all associated annotation
+
+somatic_TP53 <- subset(Annotated_somatic.variants, Gene.refgene == "TP53")
+somatic_TP53
+```
+
+
+
+```{r}
+# allele frequency of the mutations
+
+somatic_TP53$FREQ 
+
+```
+
+**Both are 33.33%**
